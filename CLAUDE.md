@@ -4,14 +4,23 @@ A Claude Code skill that walks users through enabling Agentforce Observability i
 
 ## What this does
 
-- **/setup-observability** — Guided setup: enables Session Tracing, Audit & Feedback, creates a Service Agent with Agent API access, and generates real traced sessions to populate dashboards
+- **/setup-observability** — Guided 8-phase setup wizard: enables Session Tracing, Audit & Feedback, creates a Service Agent with Agent API access, and generates real traced sessions to populate dashboards
+
+## Reference Documentation
+- Session Tracing setup: https://help.salesforce.com/s/articleView?id=ai.generative_ai_session_trace_setup.htm
+- Audit & Feedback setup: https://help.salesforce.com/s/articleView?id=ai.generative_ai_feedback_enable.htm
+- Session Tracing data model: https://help.salesforce.com/s/articleView?id=ai.generative_ai_session_trace_data_model.htm
+- OTel API (trace export): https://developer.salesforce.com/docs/ai/agentforce/guide/otel-api.html
+- Agent API (runtime): https://developer.salesforce.com/docs/ai/agentforce/guide/agent-api-get-started.html
+- Agent API examples: https://developer.salesforce.com/docs/ai/agentforce/guide/agent-api-examples.html
 
 ## Prerequisites
 
 - A Salesforce org with Agentforce enabled
 - Data Cloud enabled in the org
-- Salesforce CLI (`sf`) v2.140+ installed locally
+- Salesforce CLI (`sf`) v2.140+ installed locally (`sf update` to upgrade)
 - An admin user with Setup access
+- Browser access for SF CLI web login (required for Agent API JWT auth)
 
 ## Architecture
 
@@ -87,15 +96,35 @@ sf agent preview end --session-id <id> --api-name <AgentDeveloperName> --target-
 | Token/Credit Cost | TenantConsumptionInsights | Requires paid Agentforce plan with credit metering |
 | RAG Metrics | AiRetrieverQualityMetric | Agent must use Knowledge retrieval |
 
-## Known Limitations
+## Known Limitations & Gotchas
 
-- **Token/credit data** (`TenantConsumptionInsights`, `Ai_Response_Generation`) only populates on orgs with paid Agentforce credit consumption — SDO/trial orgs don't meter credits
+### Agent API restrictions
 - **Agent API doesn't support "Agentforce (Default)"** — must create a separate Service/External agent
-- **Employee/InternalCopilot agents** don't expose Run As User in the UI — use ExternalCopilot/ServiceAgent type
-- **Session end type** depends on how the session ends — programmatic `preview end` sets `NOT_SET`; escalation routing sets the proper type
+- **Employee/InternalCopilot agents** don't expose "Run As User" in the UI and have `BotUserId = null` — you cannot PATCH this field via API either (`CANNOT_INSERT_UPDATE_ACTIVATE_ENTITY`). Only `ExternalCopilot` (Service Agent template) exposes this setting.
+- **`bypassUser: true`** in the Agent API uses the agent's BotUserId — if that's null, you get `"Invalid user ID provided on start session: "`. Use `bypassUser: false` or assign a user.
+
+### Authentication flow
+- The SF CLI `sf agent preview` commands use a **JWT** obtained from `GET {instanceUrl}/agentforce/bootstrap/nameduser` with `Cookie: sid={accessToken}`. This only works with browser-authenticated sessions — not REST API access tokens or client_credentials tokens.
+- **`sf org login web` is required** (not `sf org login access-token`). The browser flow gives the CLI a session that the bootstrap endpoint accepts.
+- **Don't pass `--client-id` to `sf org login web`** unless your connected app has `http://localhost:1717/OauthRedirect` in callback URLs. The default PlatformCLI app handles this automatically.
+- **Client credentials flow** (`grant_type=client_credentials`) must be POSTed to the **My Domain URL** (e.g. `https://mydomain.my.salesforce.com/services/oauth2/token`), NOT `login.salesforce.com` — the latter returns `"request not supported on this domain"`.
+- Connected app scope changes are **non-breaking** — adding `chatbot_api`/`sfap_api` scopes and enabling client credentials flow doesn't invalidate existing refresh tokens or affect the authorization code flow.
+
+### Data pipeline
 - **Data Cloud sync lag** — 10-15 minutes from session creation to DLO population
-- **OTel API** requires `GenAIFeedback__dlm` table (provisioned by Audit & Feedback toggle, may take hours)
-- The `/agentforce/bootstrap/nameduser` JWT endpoint only works with browser-authenticated sessions (not REST API tokens)
+- **Session end type** depends on how the session ends — programmatic `sf agent preview end` sets `sessionEndType = "NOT_SET"`. The agent's own escalation routing sets proper types like `"Escalated"`. To get escalation data, DON'T call `preview end` after the agent escalates — let it complete.
+- **OTel API** (`GET /services/data/v66.0/einstein/audit/otel/{session-id}`) requires `GenAIFeedback__dlm` table to exist — provisioned by the Audit & Feedback toggle but can take **hours** to become available.
+- **Audit & Feedback DLOs** (`Ai_Feedback`, `GenAiResponseGeneration`) provision slowly — the toggle enables them but actual data flow may take 12-24 hours.
+
+### Credit/cost metering
+- **Token/credit data** (`TenantConsumptionInsights`, `Ai_Response_Generation`) only populates on orgs with **paid Agentforce credit billing** — SDO/trial/developer orgs don't meter credits the same way.
+- The pre-built dashboard's `Total_Flex_Credits_clc` metric formula is: `SUM(IF [Tenant_Consumption_Insights].[Card_Definition_Developer_Name] = 'FlexCredits' AND [AI_Agent_Interaction_Step].[Ai_Agent_Interaction_Step_Type] = 'ACTION_STEP' THEN [Tenant_Consumption_Insights].[Units_Consumed] ELSE 0 END)` — this will always return 0 until consumption data flows.
+- **Workaround for demos**: Use `AiAgentInteractionStep` start/end timestamps to calculate action duration as a proxy for cost.
+
+### CLI requirements
+- SF CLI must be **v2.140+** for `sf agent preview start/send/end` commands. Earlier versions don't have the agent plugin.
+- The CLI requires a `sfdx-project.json` file in the working directory (even a minimal one works: `{"packageDirectories": [{"path": "force-app", "default": true}], "sourceApiVersion": "66.0"}`).
+- `sf agent preview end` can timeout (>15s) — handle gracefully in scripts, sessions expire on their own.
 
 ## Prompt Patterns for Session Generation
 
