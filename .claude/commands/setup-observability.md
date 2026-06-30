@@ -287,6 +287,79 @@ SELECT COUNT(*) FROM AiAgentInteractionMessage__dll
 | Voice Interruption Rate | ✗ Zero | Only for voice-channel deployments |
 | Session Duration | ✓ Populated | Calculated from start/end timestamps |
 
+### Phase 9: Schedule Recurring Session Generation
+
+Ask the user: "How long would you like to generate daily sessions to build up dashboard history?"
+
+Options:
+- **7 days** — Quick test, enough for basic trends
+- **14 days** — Good for a demo with 2 weeks of history
+- **30 days** — Full month, solid trend data
+- **60 days** — Rich history for time-over-time comparisons
+- **90 days** — Maximum depth, great for quarterly views
+- **Perpetually** — Runs indefinitely until manually stopped
+
+Also ask: "How many sessions per day?" (default: 20, range: 10-50)
+
+**Implementation — macOS launchd (persistent, survives restarts):**
+
+Create a plist at `~/Library/LaunchAgents/com.agentforce.observability.sessions.plist`:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agentforce.observability.sessions</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/Frameworks/Python.framework/Versions/3.12/bin/python3</string>
+        <string>{path_to_project}/generate_sessions.py</string>
+        <string>--agent</string>
+        <string>{agent_developer_name}</string>
+        <string>--org</string>
+        <string>{org_alias}</string>
+        <string>--count</string>
+        <string>{daily_count}</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>17</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>{path_to_project}/logs/sessions.log</string>
+    <key>StandardErrorPath</key>
+    <string>{path_to_project}/logs/sessions.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin</string>
+    </dict>
+</dict>
+</plist>
+```
+
+Load it: `launchctl load ~/Library/LaunchAgents/com.agentforce.observability.sessions.plist`
+
+For non-perpetual durations, tell the user to unload after the period expires:
+`launchctl unload ~/Library/LaunchAgents/com.agentforce.observability.sessions.plist && rm ~/Library/LaunchAgents/com.agentforce.observability.sessions.plist`
+
+**Stopping the schedule at any time:**
+- Unload: `launchctl unload ~/Library/LaunchAgents/com.agentforce.observability.sessions.plist`
+- Remove: `rm ~/Library/LaunchAgents/com.agentforce.observability.sessions.plist`
+- Check logs: `cat {path_to_project}/logs/sessions.log | tail -20`
+
+**Verification:** After the first scheduled run, check:
+```bash
+tail -5 {path_to_project}/logs/sessions.log
+```
+Should show "Complete: N/N sessions successful"
+
+**Note:** The SF CLI auth token expires periodically. If sessions start failing, the user needs to re-authenticate: `sf org login web --instance-url <url> --alias <alias>`. Consider reminding the user of this when setting up long schedules (60/90 days).
+
 ## Troubleshooting
 
 ### "Observability DLOs never appeared"
