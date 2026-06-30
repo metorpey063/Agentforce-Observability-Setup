@@ -116,6 +116,13 @@ sf agent preview end --session-id <id> --api-name <AgentDeveloperName> --target-
 - **OTel API** (`GET /services/data/v66.0/einstein/audit/otel/{session-id}`) requires `GenAIFeedback__dlm` table to exist — provisioned by the Audit & Feedback toggle but can take **hours** to become available.
 - **Audit & Feedback DLOs** (`Ai_Feedback`, `GenAiResponseGeneration`) provision slowly — the toggle enables them but actual data flow may take 12-24 hours.
 
+### Escalation/Abandon metrics in preview mode
+- **Escalation Rate = 0%** in preview mode because `sf agent preview end` always sets session end type to `CLOSED_USER_REQUEST`, never `CLOSED_TRANSFERRED`. The dashboard formula (`Escalation_Status_clc`) specifically checks for step name `'CLOSED_TRANSFERRED'` in `SESSION_END` type interactions.
+- The agent DOES call `escalate_to_human` (visible in `AiAgentInteractionStep` as an LLM tool call) — the action fires but the Omni-Channel handoff can't complete without a live channel deployment.
+- **Abandon Rate = 0%** for the same reason — even "abandoned" sessions (where we don't call `preview end`) eventually get `CLOSED_USER_REQUEST` when the session expires.
+- **To get real escalation data**: deploy the agent on a Messaging channel with Omni-Channel routing (Messaging for In-App & Web → Omni-Flow → queue). When the agent escalates, the routing flow transfers to the queue and records `CLOSED_TRANSFERRED`. This requires modifying the Omni-Channel routing flow — risky in SDO orgs with existing demos.
+- **Deflection Rate DOES work** (72%) — sessions ended with `CLOSED_USER_REQUEST` that had at least one TURN interaction count as deflected.
+
 ### Credit/cost metering
 - **Token/credit data** (`TenantConsumptionInsights`, `Ai_Response_Generation`) only populates on orgs with **paid Agentforce credit billing** — SDO/trial/developer orgs don't meter credits the same way.
 - The pre-built dashboard's `Total_Flex_Credits_clc` metric formula is: `SUM(IF [Tenant_Consumption_Insights].[Card_Definition_Developer_Name] = 'FlexCredits' AND [AI_Agent_Interaction_Step].[Ai_Agent_Interaction_Step_Type] = 'ACTION_STEP' THEN [Tenant_Consumption_Insights].[Units_Consumed] ELSE 0 END)` — this will always return 0 until consumption data flows.
